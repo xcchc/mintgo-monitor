@@ -1,0 +1,31 @@
+name: selftest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # 自检脚本是纯本地的（不发网络请求、不启动浏览器），只需要模板配置
+      - name: Prepare config
+        run: cp config.example.yaml config.yaml
+
+      - name: Score selftest
+        run: python -X utf8 scripts/selftest_score.py
+
+      - name: Notify selftest
+        run: python -X utf8 scripts/selftest_notify.py

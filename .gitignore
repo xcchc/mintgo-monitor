@@ -1,0 +1,33 @@
+# ---- 本地配置（含真实推送 webhook，绝不提交）----
+config.yaml
+*.local.yaml
+.env
+.env.*
+
+# ---- 凭证 ----
+.box_token
+scripts/.box_token
+data/wallet_qr.png
+
+# ---- 运行产物 ----
+data/
+logs/
+__pycache__/
+*.py[cod]
+*.log
+
+# ---- 虚拟环境 / 编辑器 / 系统垃圾 ----
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---- 仅本地保留，不随公开仓库发布 ----
+scripts/baw_login.py
+scripts/wallet_admin.py
+scripts/box_keepalive.py
+scripts/export_box_token.py
+scripts/keepalive.bat
+scripts/register_keepalive.ps1

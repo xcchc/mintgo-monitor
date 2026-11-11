@@ -1,0 +1,80 @@
+# mintgo-monitor 配置模板
+#
+# 用法：复制本文件为 config.yaml 再按需修改。
+#   Windows : copy config.example.yaml config.yaml
+#   Linux   : cp config.example.yaml config.yaml
+#
+# config.yaml 已被 .gitignore 排除 —— 你填进去的 webhook 等私有信息不会误提交。
+
+# HTTP 代理。中国大陆直连 mintgo.fun 会被 reset（curl: (35) Recv failure），
+# 实测需要挂代理；境外主机可置空直连（更快，也不受代理软件影响）。
+# 例："http://127.0.0.1:7990"
+proxy: ""
+
+# 浏览器可执行文件。
+#   留空  → 使用 Playwright 自带的 chromium（需先执行 playwright install chromium）
+#   填路径 → 使用系统已安装的 Chrome，例如 Windows：
+#            chrome_path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+chrome_path: ""
+
+# 伪装 UA —— 本站对默认 headless UA 直接 403（nginx/1.24.0），必须改成真实 Chrome。
+user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+# 抓取的链 —— 必须和站点左上角 chain 切换器一一对应。
+# 站点实际是：ALL(前端汇总视图) / ETH / RH / INK / ARC(未上线) / BASE / BSC / ELY
+#   · all 不能直接查：服务端 409 REALTIME_SCOPE_MISMATCH，它是前端把各链合起来的视图
+#   · arc 未上线：chain-button-soon，且服务端返回 400 Invalid radar chain
+# 所以要拿「全部」数据，只能把下面每条链都翻一遍。
+chains:
+  - robinhood     # RH
+  - ethereum      # ETH
+  - ink           # INK
+  - base          # BASE
+  - bsc           # BSC（当前 0 个项目，但链是通的，不能漏）
+  - elysium       # ELY（同上）
+
+# 每链最多翻多少页（24 条/页）。Robinhood 目前约 6 页 121 条，留 12 页够用。
+max_pages: 12
+
+# 只保留多少小时内开始 / 已在进行中的项目
+lookahead_hours: 48
+
+# 筛选阈值（注意：这些值在 score.py 里通过 _cfg_val 读取，filters 块生效）
+filters:
+  min_floor_ratio: 1.0      # 地板 / mint价 至少 1 倍才算有赔率
+  min_sales_1h: 5           # 1 小时成交笔数下限
+  max_creator_projects: 10  # creator 历史项目数上限（超过算工厂盘）
+  min_creator_wallet_days: 3.0
+  late_progress_pct: 95.0   # 进度超过 95% 视为抢不到
+
+  # 1 小时成交量下限（ETH）。光看笔数会被刷量骗：实测 ASCIHOOD 有 359 笔成交，
+  # 但总成交量只有 0.000275 ETH（平均每笔 $0.0016），而正常项目单笔 $0.66~$8000。
+  # 0.001 ETH ≈ $2，足以过滤「尘埃成交」。设 0 可关闭这项检查。
+  min_volume_1h_eth: 0.001
+
+  # 只发布「有地板价格」的项目。没有地板就算不出赔率，等于盲赌。
+  # 代价：这类项目极少 —— 历史 16 份快照里有地板的只占 0.6%~2.3%，
+  #       平均每轮 1~4 个，经常一个都没有。所以很多轮次会「无项目可推」。
+  # 设为 false 可恢复成「无地板·待看」模式（把没地板的也列出来自己看）。
+  require_floor_data: true
+
+  # 仅在 require_floor_data=false 时生效：无地板项目只收免费 mint。
+  # 赔率算不出来却要付钱 = 盲付。想放宽调大，比如 0.0001。
+  nofloor_max_price_eth: 0
+
+# 报告
+report:
+  top_n: 20
+  include_all_upcoming: true   # 报告末尾附完整 upcoming 清单
+
+# 企业微信机器人推送
+# 新建群机器人后把 webhook 填进来，并把 enabled 改成 true。
+# 不想推送就保持 enabled: false，抓取和报告照常工作。
+notify:
+  enabled: false
+  webhook: ""                  # https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<你的key>
+  only_when_good: true         # 「值得打」才重点推
+  push_nofloor: true           # 没有「值得打」时，也推「无地板·待看」名单
+  cooldown_minutes: 180        # 同一项目 3 小时内不重复推
+  min_score_delta: 10          # 分数涨 10 分以上可以打破冷却
+  state_file: "data/notify_state.json"
