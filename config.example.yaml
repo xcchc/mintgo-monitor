@@ -62,10 +62,53 @@ filters:
   # 赔率算不出来却要付钱 = 盲付。想放宽调大，比如 0.0001。
   nofloor_max_price_eth: 0
 
+  # 真实成交溢价复核（mint 前的最后一道需求检查）。
+  # 挂单地板只是「卖方要价」，只有成交价才算市场。真实案例：某项目地板 0.000396，
+  # 但 35 笔真实成交全在 0.000097~0.0001（等于 mint 价），买单 0 个 ——
+  # 按挂单价算出的 3.96x 赔率，没有任何人付过钱。
+  min_sale_premium: 1.1     # 成交中位价必须 ≥ mint 价 × 1.1
+  sale_sample: 50           # 取最近多少笔真实成交算中位价
+  require_offers: true      # 付费项目：集合买单为 0 时跳过（没有真实买家）
+  demand_check_report: true # 报告里的「值得打/观察」也走同一套复核
+
 # 报告
 report:
   top_n: 20
   include_all_upcoming: true   # 报告末尾附完整 upcoming 清单
+
+# 自动打新（scripts/auto_mint.py）
+# 默认关闭。开启后每轮检查候选，满足全部安全闸才广播交易。
+# 仓位参数按 Robinhood 链上 ~0.004 ETH / $8 的总资金设定，请按自己的资金重算：
+#   单笔上限 0.0005 ETH ≈ $1.0   —— 约总资金 12%
+#   每日总额 0.0015 ETH ≈ $3.1   —— 约总资金 37%
+#   每日笔数 3 笔
+# 三层同时生效，任一层触顶就停手。
+automint:
+  enabled: false
+  max_price_eth: 0.0005
+  max_per_day: 3
+  max_daily_spend_eth: 0.0015
+  quantity: 1              # 每次 mint 几个（受项目 max_per_wallet 限制）
+
+# 自动挂单卖出（scripts/auto_list.py）
+# 需要 burner 钱包持有 NFT；不参与定时任务，必须手动跑。
+autolist:
+  enabled: false
+  target_multiple: 2.0     # 地板价达到 mint 成本的几倍才值得挂
+  undercut_pct: 2.0        # 比当前地板价低百分之几（为了更快成交）
+  min_price_eth: 0.0001    # 低于这个价不挂（不值得付 gas）
+
+# 持仓监控（scripts/watch_holdings.py）
+# 每个打中的 NFT 自动纳入监控，地板价到指定倍数就提醒（不自动卖）。
+holdings_watch:
+  enabled: true
+  # 注意：config_loader 只认「每行一个 - 项」的块列表，不认 [3, 5, 10]
+  alert_multiples:
+    - 3
+    - 5
+    - 10
+  alert_on_loss: true          # 跌破成本时也提醒
+  check_interval_minutes: 30   # 同一持仓两次详细检查的最小间隔（防刷 API）
 
 # 企业微信机器人推送
 # 新建群机器人后把 webhook 填进来，并把 enabled 改成 true。

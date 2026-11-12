@@ -10,6 +10,10 @@
 
 *An automated screener for [mintgo.fun](https://mintgo.fun) NFT mints: scrapes the radar via a real headless browser, scores each drop by floor/mint odds, trading depth and creator history, then renders a Markdown report or pushes it to WeCom.*
 
+> **延伸到「自动打新 + 自动挂单」**：见 [AUTOMATION.md](AUTOMATION.md)。
+> 用 OpenSea 官方 API 构造交易（不逆向合约），BAW 执行 mint，burner 钱包签 Seaport 卖单。
+> 默认 dry-run，双重开关，五道安全闸。
+
 ---
 
 ## 目录
@@ -18,12 +22,14 @@
 - [快速开始](#快速开始)
 - [配置说明](#配置说明)
 - [用法](#用法)
+- [自动化：打新与挂单](#自动化打新与挂单可选默认全关)
 - [输出物](#输出物)
 - [目录结构](#目录结构)
 - [筛选逻辑](#筛选逻辑)
 - [企业微信推送](#企业微信推送)
 - [自检](#自检)
 - [已知限制](#已知限制)
+- [安全与私钥（SECURITY.md）](SECURITY.md)
 - [免责声明](#免责声明)
 
 ## 为什么需要它
@@ -128,6 +134,40 @@ Linux / macOS 用 cron：
 
 > Windows 下也可直接双击 `scripts\run.bat` 跑一轮。
 
+## 自动化：打新与挂单（可选，默认全关）
+
+上面那套只做「看」。这一层会真的动钱，**默认全部关闭**，需要逐个显式打开：
+
+| 脚本 | 作用 | 默认 | 怎么打开 |
+|---|---|---|---|
+| `scripts/auto_mint.py` | 对通过筛选的项目自动 mint | dry-run，只预检不广播 | `--live` + `automint.enabled: true` |
+| `scripts/auto_list.py` | 把持有的 NFT 挂到 OpenSea 卖出 | 不参与定时任务 | `--live` + `autolist.enabled: true` |
+| `scripts/watch_holdings.py` | 盯持仓地板价，到 3x/5x/10x 提醒 | 随定时任务跑 | `holdings_watch.enabled` |
+| `scripts/wallet_admin.py` | 查余额 / 额度 / 授权、转账、兑换 | 只读命令随时可用 | 动钱要显式加 `--yes` |
+
+设计取舍、五道安全闸、踩过的坑（价格缓存、`eth_getCode` 403、PowerShell 写 BOM、`baw` 是 npm shim……）都在 [AUTOMATION.md](AUTOMATION.md)。
+
+### 三层仓位限制
+
+```yaml
+automint:
+  enabled: false
+  max_price_eth: 0.0005        # 单笔上限
+  max_per_day: 3               # 每日笔数
+  max_daily_spend_eth: 0.0015  # 每日累计花费
+```
+
+任何一层触顶就停手。**这三个数要按你自己的资金规模重算，不要照抄。**
+
+### 钱包与私钥：两种模式
+
+| 用途 | 钱包 | 私钥在哪 |
+|---|---|---|
+| 打新（mint） | 币安 Agentic Wallet（BAW） | 币安侧托管，本地不碰 |
+| 挂单卖出 | 自持 burner 钱包 | 本地 `data/burner_wallet.key`（`.gitignore` 已排除） |
+
+为什么必须分开：BAW **签不了** Seaport 的 EIP-712 订单（返回 `953004 We currently don't support signing this type of message`），所以卖单只能由你自己持私钥的钱包签。这意味着 **NFT 一旦转进 burner，就只由那个文件保护** —— 丢了就永久丢失。细节和红线见 [SECURITY.md](SECURITY.md)。
+
 ## 输出物
 
 | 路径 | 内容 |
@@ -160,6 +200,14 @@ mintgo-monitor/
 │   ├── run.bat            # Windows 一键跑一次
 │   ├── run_loop.ps1       # Windows 常驻循环
 │   ├── register_task.ps1  # 注册 / 注销 Windows 计划任务
+│   ├── auto_mint.py       # 自动打新（默认 dry-run，五道安全闸）
+│   ├── auto_list.py       # 挂单卖出到 OpenSea（burner 钱包签名）
+│   ├── watch_holdings.py  # 持仓地板价盯盘与提醒
+│   ├── wallet_admin.py    # 钱包查询/转账/兑换（动钱需 --yes）
+│   ├── burner_wallet.py   # 生成/导出自持钱包（挂单用）
+│   ├── opensea_key.py     # 自动申请并续期 OpenSea API key
+│   ├── baw_login.py       # 币安 Agentic Wallet 扫码登录
+│   ├── scan_upcoming.py   # 扫描即将开抢的项目
 │   ├── preview_notify.py  # 推送排版预览（可 --send 真发）
 │   ├── selftest_notify.py # 推送模块自检（纯本地）
 │   └── selftest_score.py  # 评分模块自检（纯本地）
@@ -205,6 +253,43 @@ filters:
 ```
 
 加上后 ASCIHOOD 从 45 分掉到 5 分，正确判为「跳过」。设 `min_volume_1h_eth: 0` 可关闭。
+
+### 挂单价不等于成交价：为什么还要查真实成交
+
+真实案例：`mihaoo`（2026-11-12）。mint 价 0.0001 ETH，OpenSea 挂单地板 0.000396，
+按「地板 / mint」算出 **3.96x**，自动打新连打 3 个。打完之后去查真实成交：
+
+| 口径 | 数值 |
+|---|---|
+| 挂单地板（卖方要价） | 0.000396 ETH |
+| 真实成交最大值（35 笔样本） | **0.0001 ETH** |
+| 真实成交中位数 | 0.000098 ETH |
+| 集合买单数 | **0 个** |
+
+**从来没有一笔成交高于 mint 价。** 那个 3.96x 是「最低挂单价 / mint 价」——
+挂单人随手标的价格，没有任何人付过钱。挂到 0.000388 之后没人吃，因为需求端是空的。
+
+所以 mint 前多了最后一道复核（`premium_gate`）：
+
+```yaml
+filters:
+  min_sale_premium: 1.1     # 成交中位价必须 ≥ mint 价 × 1.1
+  sale_sample: 50           # 取最近多少笔真实成交算中位价
+  require_offers: true      # 付费项目：集合买单为 0 → 跳过
+  demand_check_report: true # 报告里的「值得打/观察」也走同一套复核
+```
+
+数据源是 OpenSea 的 `/events/collection/{slug}?event_type=sale`（真实成交）和
+`/offers/collection/{slug}`（买单），都不是挂单接口。
+
+两个落点：
+
+- `scripts/auto_mint.py` 的 `realtime_gate()` —— 拦在广播之前
+- `src/run_once.py` 的 `apply_demand_filter()` —— 报告里把「挂单赔率好看但没成交」的降级成跳过
+
+只对已判为「值得打/观察」的项目发请求（每轮 0~4 个），不会拖慢抓取。
+
+**代价**：新项目常常「有挂单、还没成交」，会被这道闸直接跳过。宁可错过，不再拿卖方要价当市场价。
 
 ### 四档判定
 

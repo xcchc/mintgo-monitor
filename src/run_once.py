@@ -24,6 +24,47 @@ from report import render  # noqa: E402
 from notify import push  # noqa: E402
 
 
+def apply_demand_filter(scored: list, cfg: dict, log) -> int:
+    """用真实成交价 + 买单数复核「值得打 / 观察」，不达标就降级成跳过。
+
+    为什么要有这一层：挂单地板只是**卖方要价**。实测 mihaoo 地板 0.000396，
+    但 35 笔真实成交全在 0.000097~0.0001（等于 mint 价），买单 0 个 ——
+    按挂单价算出的 3.96x 赔率没有任何人付过钱。
+
+    只对已判为 值得打/观察 的少数项目发请求（每轮 0~4 个），不会拖慢抓取。
+    """
+    filters = cfg.get("filters") or {}
+    if not filters.get("demand_check_report", True):
+        return 0
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from auto_mint import premium_gate, slug_from_scored  # noqa: PLC0415
+    from opensea_key import ensure  # noqa: PLC0415
+
+    targets = [s for s in scored if s.verdict in ("值得打", "观察")]
+    if not targets:
+        return 0
+
+    key = ensure(verbose=False)
+    downgraded = 0
+    for s in targets:
+        slug = slug_from_scored(s.as_dict())
+        if not slug:
+            continue
+        try:
+            ok, why, info = premium_gate(slug, s.mint_eth, cfg, key)
+        except Exception as e:  # noqa: BLE001
+            log(f"  需求复核失败（{s.name}）：{e}")
+            continue
+        s.reasons.append(f"需求复核：{why}")
+        s.demand = info
+        if not ok:
+            s.verdict = "跳过"
+            downgraded += 1
+            log(f"  降级为跳过：{s.name} —— {why}")
+    return downgraded
+
+
 def main() -> int:
     cfg_path = ROOT / "config.yaml"
     if not cfg_path.exists():
@@ -68,6 +109,11 @@ def main() -> int:
 
     scored = score_all(data, cfg)
     log(f"打分完成：{len(scored)} 个进入时间窗")
+
+    # 真实需求复核：成交中位价 + 买单数，把「挂单赔率好看但没人买」的降级
+    downgraded = apply_demand_filter(scored, cfg, log)
+    if downgraded:
+        log(f"需求复核降级 {downgraded} 个（挂单价不等于成交价）")
 
     md = render(scored, data, cfg)
 

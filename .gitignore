@@ -24,10 +24,12 @@ venv/
 .DS_Store
 Thumbs.db
 
-# ---- 仅本地保留，不随公开仓库发布 ----
-scripts/baw_login.py
-scripts/wallet_admin.py
+# ---- 仅本地保留：云主机（box）专用，与开源工具链无关 ----
 scripts/box_keepalive.py
 scripts/export_box_token.py
 scripts/keepalive.bat
 scripts/register_keepalive.ps1
+
+# OpenSea API key（免费 7 天期，可自动续）
+data/opensea_key.json
+data/burner_wallet*

@@ -47,7 +47,10 @@ def _parse_scalar(raw: str):
 
 
 def load(path: str | Path) -> dict:
-    text = Path(path).read_text(encoding="utf-8")
+    # encoding="utf-8-sig" 会顺手吃掉 BOM。
+    # 起因：用 PowerShell `Set-Content -Encoding UTF8` 改配置会写入 \ufeff，
+    # 之后第一行变成 '\ufeff# mintgo-monitor 配置'，解析直接炸。
+    text = Path(path).read_text(encoding="utf-8-sig")
     root: dict = {}
 
     cur: dict = root
