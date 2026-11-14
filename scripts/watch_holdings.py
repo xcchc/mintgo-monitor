@@ -69,6 +69,8 @@ def main() -> int:
     changed = False
 
     for hkey, h in holdings.items():
+        if h.get("sold"):
+            continue  # 已卖出的不再盯盘
         slug = h.get("slug") or ""
         cost = float(h.get("cost_eth") or 0) or 1e-12
         name = h.get("name") or slug

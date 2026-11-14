@@ -61,15 +61,15 @@ def render(scored: list[Scored], data: dict, cfg: dict) -> str:
         lines.append("_本轮没有满足条件的项目。_")
         lines.append("")
     else:
-        lines.append("| 项目 | 链 | mint | 地板 | 赔率 | 1h成交 | 进度 | 开抢 | 上限 | 链接 |")
-        lines.append("|---|---|---|---|---|---|---|---|---|---|")
+        lines.append("| 项目 | 链 | mint | 地板 | 成交中位 | 赔率 | 1h成交 | 进度 | 开抢 | 上限 | 链接 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
         for s in good[:top_n]:
             links = " ".join(
                 x for x in (_link(s.opensea, "OS"), _link(s.twitter, "X"), _link(s.explorer, "链")) if x != "—"
             ) or "—"
             lines.append(
                 f"| **{s.name}** | {CHAIN_LABEL.get(s.chain, s.chain)} | {_fmt_eth(s.mint_eth)} "
-                f"| {_fmt_eth(s.floor_eth)} | {_fmt_ratio(s.ratio)} | {s.sales_1h} "
+                f"| {_fmt_eth(s.floor_eth)} | {_fmt_eth(s.sale_median_eth)} | {_fmt_ratio(s.ratio)} | {s.sales_1h} "
                 f"| {s.progress_pct if s.progress_pct is not None else '—'}% "
                 f"| {_fmt_start(s.start_at, now_ms)} | {s.max_per_wallet or '—'} | {links} |"
             )
@@ -92,12 +92,12 @@ def render(scored: list[Scored], data: dict, cfg: dict) -> str:
         lines.append("_无。_")
         lines.append("")
     else:
-        lines.append("| 项目 | 链 | mint | 地板 | 赔率 | 1h成交 | 进度 | 开抢 | 分 |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+        lines.append("| 项目 | 链 | mint | 地板 | 成交中位 | 赔率 | 1h成交 | 进度 | 开抢 | 分 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|")
         for s in watch[:top_n]:
             lines.append(
                 f"| {s.name} | {CHAIN_LABEL.get(s.chain, s.chain)} | {_fmt_eth(s.mint_eth)} "
-                f"| {_fmt_eth(s.floor_eth)} | {_fmt_ratio(s.ratio)} | {s.sales_1h} "
+                f"| {_fmt_eth(s.floor_eth)} | {_fmt_eth(s.sale_median_eth)} | {_fmt_ratio(s.ratio)} | {s.sales_1h} "
                 f"| {s.progress_pct if s.progress_pct is not None else '—'}% "
                 f"| {_fmt_start(s.start_at, now_ms)} | {s.score} |"
             )
@@ -132,12 +132,12 @@ def render(scored: list[Scored], data: dict, cfg: dict) -> str:
     if (cfg.get("report") or {}).get("include_all_upcoming"):
         lines.append("<details><summary>完整清单（按分数）</summary>")
         lines.append("")
-        lines.append("| 项目 | 链 | mint | 地板 | 1h成交 | 判定 | 分 |")
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("| 项目 | 链 | mint | 地板 | 成交中位 | 1h成交 | 判定 | 分 |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for s in scored:
             lines.append(
                 f"| {s.name} | {CHAIN_LABEL.get(s.chain, s.chain)} | {_fmt_eth(s.mint_eth)} "
-                f"| {_fmt_eth(s.floor_eth)} | {s.sales_1h} "
+                f"| {_fmt_eth(s.floor_eth)} | {_fmt_eth(s.sale_median_eth)} | {s.sales_1h} "
                 f"| {VERDICT_ICON.get(s.verdict,'')} {s.verdict} | {s.score} |"
             )
         lines.append("")

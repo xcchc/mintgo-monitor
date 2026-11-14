@@ -154,6 +154,7 @@ class Scored:
     twitter: str | None
     opensea: str | None
     explorer: str | None
+    sale_median_eth: float | None = None
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -225,6 +226,22 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
 
     price_eth = float(item.get("priceEth") or 0)
     floor = market.floor if market else None
+
+    # 成交价优先：run_once 抓完数据后，会给「有地板」的项目回填 saleMedianEth
+    # （OpenSea 真实成交的中位价，已折算成 ETH 等值）。挂单地板只是卖方要价，
+    # 只有成交价才算市场 —— 所以有成交价时一律用它当赔率分母。
+    sale_med: float | None = None
+    raw_sm = item.get("saleMedianEth")
+    if raw_sm is not None:
+        try:
+            sale_med = float(raw_sm)
+        except (TypeError, ValueError):
+            sale_med = None
+        if sale_med is not None and sale_med <= 0:
+            sale_med = None
+    price_ref = sale_med if sale_med is not None else floor
+    ref_label = "成交中位" if sale_med is not None else "地板"
+
     sales_1h = market.sales_1h if market else 0
     # 1 小时成交量门槛（ETH）。低于这个值即使笔数很多也视为刷量。
     # 0.001 ETH ≈ $2，足够过滤掉「每笔 $0.0016」这种尘埃成交。
@@ -244,24 +261,24 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
 
     # ---- 1. 赔率 ----
     ratio = None
-    if floor and price_eth > 0:
-        ratio = floor / price_eth
+    if price_ref and price_eth > 0:
+        ratio = price_ref / price_eth
         if ratio >= 2:
             score += 40
-            reasons.append(f"赔率 {ratio:.2f}x（地板 {floor:g} / mint {price_eth:g}）")
+            reasons.append(f"赔率 {ratio:.2f}x（{ref_label} {price_ref:g} / mint {price_eth:g}）")
         elif ratio >= 1:
             score += 25
-            reasons.append(f"赔率 {ratio:.2f}x")
+            reasons.append(f"赔率 {ratio:.2f}x（{ref_label}口径）")
         elif ratio >= 0.5:
             score += 8
-            reasons.append(f"赔率偏低 {ratio:.2f}x")
+            reasons.append(f"赔率偏低 {ratio:.2f}x（{ref_label}口径）")
         else:
             score -= 25
-            reasons.append(f"赔率亏损 {ratio:.2f}x（mint 比地板还贵）")
-    elif price_eth == 0 and floor:
+            reasons.append(f"赔率亏损 {ratio:.2f}x（{ref_label} {price_ref:g} 低于 mint {price_eth:g}）")
+    elif price_eth == 0 and price_ref:
         ratio = float("inf")
         score += 35
-        reasons.append(f"免费 mint，地板 {floor:g}")
+        reasons.append(f"免费 mint，{ref_label} {price_ref:g}")
     elif price_eth == 0:
         score += 12
         reasons.append("免费 mint（暂无地板）")
@@ -353,7 +370,7 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
     #       平均每轮 1~4 个，经常是 0 个。这不是 bug，是数据本身的客观情况。
     # 想恢复「列出来自己看」的模式：config.yaml 里把 require_floor_data 设为 false。
     require_floor = bool(_cfg_val(cfg, "require_floor_data", True))
-    no_floor_data = floor is None
+    no_floor_data = floor is None and sale_med is None
 
     # 无地板但允许展示时，只收免费 mint（赔率算不出却要付钱 = 盲付）
     nofloor_max_price = float(_cfg_val(cfg, "nofloor_max_price_eth", 0.0))
@@ -408,6 +425,7 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
         reasons=reasons,
         mint_eth=price_eth,
         floor_eth=floor,
+        sale_median_eth=sale_med,
         ratio=(None if ratio is None else (round(ratio, 3) if ratio != float("inf") else "inf")),
         sales_1h=sales_1h,
         progress_pct=progress,

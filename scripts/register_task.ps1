@@ -44,7 +44,14 @@ if ($existing) {
     Write-Host "Removed old task, rebuilding" -ForegroundColor DarkGray
 }
 
-$action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$bat`"" -WorkingDirectory $projectRoot
+$vbs = Join-Path $PSScriptRoot "run_hidden.vbs"
+if (Test-Path $vbs) {
+    # Use the VBS wrapper so no console window ever appears.
+    $arg = '"' + $vbs + '"'
+    $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $arg -WorkingDirectory $projectRoot
+} else {
+    $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$bat`"" -WorkingDirectory $projectRoot
+}
 
 $startAt = (Get-Date).AddMinutes(1)
 $trigger = New-ScheduledTaskTrigger -Once -At $startAt -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)

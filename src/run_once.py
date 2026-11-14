@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 import sys
 import time
 import traceback
@@ -22,6 +23,49 @@ from fetch_radar import collect  # noqa: E402
 from score import score_all  # noqa: E402
 from report import render  # noqa: E402
 from notify import push  # noqa: E402
+
+
+def enrich_sale_medians(data: dict, cfg: dict, log) -> int:
+    """给「有地板」的项目回填真实成交中位价（ETH 等值），供打分使用。
+
+    为什么：挂单地板只是**卖方要价**，评分必须按成交价算赔率。
+    实测 mihaoo 地板 0.000396、真实成交全在 0.0001 —— 用挂单价会算出 4 倍假赔率。
+
+    只处理有地板的少数项目（每轮 1~4 个），避免把 OpenSea 读额度（600/h）打光。
+    """
+    filters = cfg.get("filters") or {}
+    if not filters.get("score_by_sale_price", True):
+        return 0
+    eth_usd = float(filters.get("eth_usd_assume", 2000) or 2000)
+    sample = int(filters.get("sale_sample", 50))
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from score import build_market_index  # noqa: PLC0415
+    from auto_mint import recent_sale_prices  # noqa: PLC0415
+    from opensea_key import ensure  # noqa: PLC0415
+
+    idx = build_market_index(data.get("market") or {})
+    key = ensure(verbose=False)
+    filled = 0
+    for chain, block in (data.get("radar") or {}).items():
+        for it in block.get("items") or []:
+            addr = (it.get("contractAddress") or "").lower()
+            mr = idx.get((chain, addr))
+            if not mr or mr.floor is None:
+                continue  # 没地板的不回填，省额度
+            slug = it.get("openSeaSlug")
+            if not slug:
+                continue
+            try:
+                prices = recent_sale_prices(slug, key, sample, eth_usd)
+            except Exception as e:  # noqa: BLE001
+                log(f"  成交价回填失败（{slug}）：{e}")
+                continue
+            if not prices:
+                continue
+            it["saleMedianEth"] = round(statistics.median(prices), 12)
+            filled += 1
+    return filled
 
 
 def apply_demand_filter(scored: list, cfg: dict, log) -> int:
@@ -106,6 +150,11 @@ def main() -> int:
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
         )
         return 2
+
+    # 评分前先回填真实成交价：赔率按成交价算，不按挂单价
+    filled = enrich_sale_medians(data, cfg, log)
+    if filled:
+        log(f"成交价回填：{filled} 个（赔率按成交价口径）")
 
     scored = score_all(data, cfg)
     log(f"打分完成：{len(scored)} 个进入时间窗")

@@ -401,12 +401,19 @@ def fresh_stats(slug: str, key: str) -> dict | None:
         return None
 
 
-def recent_sale_prices(slug: str, key: str, sample: int = 50) -> list[float]:
-    """最近的真实成交价（不是挂单价）。
+STABLE_SYMBOLS = {"USDG", "USDC", "USDT", "DAI", "FDUSD"}
+
+
+def recent_sale_prices(slug: str, key: str, sample: int = 50, eth_usd: float = 2000.0) -> list[float]:
+    """最近的真实成交价（不是挂单价），统一折算成 ETH 等值。
 
     **为什么不能用地板价当赔率**：实测 mihaoo 挂单地板 0.000396，
     但 35 笔真实成交全部在 0.000097~0.0001（等于 mint 价）。
     按挂单价算出来的 3.96x 从来没被任何人付过钱。
+
+    **为什么要折算币种**：Robinhood 链上大量成交其实用 USDG（6 位小数稳定币）
+    结算。直接拿 payment.quantity 当 ETH 会得到「0.09 ETH」这种荒谬价格 ——
+    实际是 0.09 USDG。这里只接受 ETH/WETH 与常见稳定币，其余币种丢弃。
     """
     code, d = os_get(
         f"/events/collection/{slug}?event_type=sale&limit={max(1, min(sample, 50))}",
@@ -421,9 +428,16 @@ def recent_sale_prices(slug: str, key: str, sample: int = 50) -> list[float]:
         if not q:
             continue
         try:
-            out.append(int(q) / (10 ** int(pay.get("decimals") or 18)))
+            sym = (pay.get("symbol") or "").upper()
+            dec = int(pay.get("decimals") or 18)
+            raw = int(q) / (10 ** dec)
         except Exception:  # noqa: BLE001
             continue
+        if sym in ("ETH", "WETH") and dec == 18:
+            out.append(raw)
+        elif sym in STABLE_SYMBOLS:
+            out.append(raw / eth_usd)
+        # 其他代币计价：无法可靠折算，丢弃
     return out
 
 
@@ -447,7 +461,7 @@ def premium_gate(slug: str, price_eth: float, cfg: dict, key: str) -> tuple[bool
     sample = int(filters.get("sale_sample", 50))
     require_offers = bool(filters.get("require_offers", True))
 
-    prices = recent_sale_prices(slug, key, sample)
+    prices = recent_sale_prices(slug, key, sample, float(filters.get("eth_usd_assume", 2000) or 2000))
     info: dict = {"sales_sampled": len(prices), "median_sale": None, "offers": None}
     if not prices:
         return False, "最近没有真实成交记录，挂单价没有成交支撑", info

@@ -12,7 +12,6 @@
 | `config.yaml` | 你的企业微信 webhook（含 key）、代理地址、仓位参数 |
 | `data/` | `burner_wallet.key`（**私钥**）、`opensea_key.json`、持仓、成交记录、抓取快照 |
 | `logs/` | 运行日志，含钱包地址与交易哈希 |
-| `scripts/.box_token` | 云主机访问令牌（仅本项目的历史遗留，与工具链无关） |
 | `data/wallet_qr.png` | 登录二维码，约 5 分钟有效 |
 
 `config.example.yaml` 是模板，里面只有占位符，可以安全公开。

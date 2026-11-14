@@ -71,6 +71,11 @@ filters:
   require_offers: true      # 付费项目：集合买单为 0 时跳过（没有真实买家）
   demand_check_report: true # 报告里的「值得打/观察」也走同一套复核
 
+  # 打分口径：用真实成交中位价当赔率分子，而不是挂单地板。
+  # 挂单价可以随手标，成交价才是市场；关掉就退回「挂单价口径」。
+  score_by_sale_price: true
+  eth_usd_assume: 2000      # Robinhood 链上有大量稳定币（USDG）成交，折算成 ETH 等值的固定汇率
+
 # 报告
 report:
   top_n: 20

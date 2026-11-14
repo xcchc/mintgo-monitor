@@ -98,7 +98,7 @@ baw sign-message preview --signType EIP712 --message '<Seaport typed data>'
 
 ```
 ① 监控（已有）
-   box 每 30 分钟抓 mintgo.fun radar + market
+   本机每 30 分钟跑 src/run_once.py 抓 mintgo.fun radar + market
    → data/latest_scored.json
 
 ② 判断（auto_mint.py）
