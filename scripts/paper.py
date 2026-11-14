@@ -125,15 +125,17 @@ def _slug_of(s: dict) -> str | None:
 
 
 def sale_prices_between(slug: str, key: str, t0_epoch: int, t1_epoch: int,
-                        eth_usd: float, pages: int = 6) -> tuple[list[float], bool]:
-    """拉取 [t0, t1] 窗口内的成交价，返回 (价格列表, 是否回溯到了 t0)。
+                        eth_usd: float, pages: int = 6) -> tuple[list[float], bool, bool]:
+    """拉取 [t0, t1] 窗口内的成交价。
 
-    OpenSea 的 events 只按时间倒序返回，热门项目一页 50 条可能只覆盖几十分钟，
-    所以要翻多页，并用「最老一条是否早于 t0」判断有没有漏。
+    返回 (价格列表, 是否回溯到 t0, 是否有成功响应)。
+    第三项很重要：拉取失败（404/限流/集合被下架）不能当成「没人买」，
+    否则回测会出现假阴性。失败时调用方应保留待结算状态，下次重试。
     """
     out: list[float] = []
     cursor = ""
     reached = False
+    ok = False
     for _ in range(pages):
         path = f"/events/collection/{slug}?event_type=sale&limit=50"
         if cursor:
@@ -144,6 +146,7 @@ def sale_prices_between(slug: str, key: str, t0_epoch: int, t1_epoch: int,
             continue
         if code != 200 or not isinstance(d, dict):
             break
+        ok = True
         oldest = None
         for e in d.get("asset_events") or []:
             pay = e.get("payment") or {}
@@ -171,7 +174,7 @@ def sale_prices_between(slug: str, key: str, t0_epoch: int, t1_epoch: int,
         if not cursor:
             reached = True  # 没有更多历史了
             break
-    return out, reached
+    return out, reached, ok
 
 
 def cmd_settle(args) -> int:
@@ -196,9 +199,13 @@ def cmd_settle(args) -> int:
     rows = []
     for i, s in enumerate(pending, 1):
         t0 = int(s["ts_epoch"])
-        prices, reached = sale_prices_between(
+        prices, reached, ok = sale_prices_between(
             s["slug"], key, t0, t0 + args.window * 3600, args.eth_usd
         )
+        if not ok:
+            # 拉取失败不等于没人买：保留待结算状态，下次重试
+            log(f"  {s['slug']}: 拉取失败，跳过（下次重试）")
+            continue
         med = statistics.median(prices) if prices else None
         cost = float(s["mint_eth"]) + GAS_ETH
         roi = ((med * FEE - cost) / cost) if med else None
