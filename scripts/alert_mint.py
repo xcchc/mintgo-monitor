@@ -1,10 +1,10 @@
-"""打新提醒：带「最优买单 / 最优卖单」+ mint 结束时间，落盘并推送。
+"""打新提醒：一条消息汇总本轮候选，带「最优买/卖价」与 mint 结束时间。
 
 为什么需要它
 ------------
 光看地板价（最低卖单）会误判 —— 地板是卖方一厢情愿的报价。
 真正决定「能不能卖得掉」的是**有没有人挂买单**，以及买卖价差有多大。
-所以这条提醒强制带上：
+所以每个项目固定带：
 
     · 最优卖单（best ask，即地板）
     · 最优买单（best bid，集合级报价里最高的那条）
@@ -16,7 +16,7 @@
 1. 报告判定为「值得打 / 观察」
 2. 赔率（地板/mint）≥ alert.min_ratio 且 1h 成交笔数 ≥ alert.min_sales_1h
 
-同类提醒有冷却（默认 6 小时），避免刷屏。
+同一项目有冷却（默认 6 小时），避免刷屏；mint 结束前再补一条「即将结束」。
 
 用法
 ----
@@ -46,6 +46,7 @@ SCORED = ROOT / "data" / "latest_scored.json"
 STATE = ROOT / "data" / "alert_state.json"
 LOG_FILE = ROOT / "data" / "mint_alerts.jsonl"
 CST = timezone(timedelta(hours=8))
+MAX_BYTES = 2000  # 企业微信 text 上限 2048 字节，留点余量
 
 
 def log(msg: str) -> None:
@@ -64,6 +65,13 @@ def load_json(path: Path, default):
 def save_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def byte_len(s: str) -> int:
+    return len(s.encode("utf-8"))
+
+
+# ---------------------------------------------------------------- 市场数据
 
 
 def best_ask(slug: str, key: str) -> float | None:
@@ -101,6 +109,16 @@ def best_bid(slug: str, key: str) -> float | None:
     return best
 
 
+def sale_median(slug: str, key: str, cfg: dict) -> float | None:
+    filters = cfg.get("filters") or {}
+    eth_usd = float(filters.get("eth_usd_assume", 2000) or 2000)
+    prices = recent_sale_prices(slug, key, int(filters.get("sale_sample", 50)), eth_usd)
+    return statistics.median(prices) if prices else None
+
+
+# ---------------------------------------------------------------- 格式化
+
+
 def fmt_eth(v: float | None) -> str:
     if v is None:
         return "无"
@@ -111,25 +129,120 @@ def fmt_eth(v: float | None) -> str:
     return f"{v:g}"
 
 
-def end_info(end_iso: str | None) -> tuple[str, float | None]:
-    """把 endAt 转成 (人话, 剩余小时)。endAt 可能是 ISO 或毫秒时间戳。"""
-    if not end_iso:
-        return "未知", None
+def parse_time(raw) -> datetime | None:
+    if raw is None:
+        return None
     try:
-        if str(end_iso).isdigit():
-            t = datetime.fromtimestamp(int(end_iso) / (1000 if len(str(end_iso)) > 10 else 1), CST)
-        else:
-            t = datetime.fromisoformat(str(end_iso).replace("Z", "+00:00")).astimezone(CST)
+        if str(raw).isdigit():
+            n = int(raw)
+            return datetime.fromtimestamp(n / (1000 if n > 10**11 else 1), CST)
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(CST)
     except (ValueError, TypeError, OSError):
-        return str(end_iso), None
+        return None
+
+
+def fmt_end(raw) -> tuple[str, float | None]:
+    t = parse_time(raw)
+    if not t:
+        return "未知", None
     left = (t - datetime.now(CST)).total_seconds() / 3600
-    return f"{t:%m-%d %H:%M}（{'还剩 %.1f 小时' % left if left > 0 else '已结束'}）", left
+    tail = f"还剩 {left:.1f} 小时" if left > 0 else "已结束"
+    return f"{t:%m-%d %H:%M}（{tail}）", left
+
+
+def fmt_start(raw) -> str:
+    t = parse_time(raw)
+    if not t:
+        return "—"
+    left = (t - datetime.now(CST)).total_seconds() / 60
+    tail = "进行中" if left <= 0 else f"还有 {left/60:.1f} 小时"
+    return f"{t:%m-%d %H:%M}（{tail}）"
+
+
+CHAIN_LABEL = {
+    "robinhood": "Robinhood",
+    "ethereum": "Ethereum",
+    "base": "Base",
+    "ink": "Ink",
+    "bsc": "BSC",
+    "elysium": "Elysium",
+}
+
+
+# ---------------------------------------------------------------- 消息拼装
+
+
+def render_entry(idx: int, e: dict) -> list[str]:
+    verdict = e.get("verdict") or ""
+    head = {"值得打": "🟢", "观察": "🟡"}.get(verdict, "⚡")
+    ratio = e.get("ratio")
+    if ratio == float("inf"):
+        ratio_txt = "∞"
+    elif ratio is None:
+        ratio_txt = "—"
+    else:
+        ratio_txt = f"{ratio:.2f}x"
+
+    ask, bid, med = e.get("ask"), e.get("bid"), e.get("med")
+    ask_txt = "无（没有任何卖单）" if ask is None else f"{fmt_eth(ask)} ETH"
+    bid_txt = "无（没有任何买单）" if bid is None else f"{fmt_eth(bid)} ETH"
+    spread = None
+    if ask and bid:
+        spread = (ask - bid) / ask * 100
+    spread_txt = f"{spread:.1f}%" if spread is not None else "—（缺一侧报价）"
+
+    lines = [
+        f"{idx}. {head} {e['name']}",
+        f"   📍 链：{CHAIN_LABEL.get(e.get('chain'), e.get('chain') or '—')}",
+        f"   💰 mint：{fmt_eth(e.get('mint'))} ETH ｜ 最优卖单 {ask_txt}",
+        f"   🟩 最优买单：{bid_txt}",
+        f"   📊 成交中位：{fmt_eth(med)} ETH ｜ 价差 {spread_txt} ｜ 1h {e.get('sales_1h') or 0} 笔",
+        f"   ⏰ 开抢：{fmt_start(e.get('start_at'))}",
+        f"   🏁 mint 结束：{e.get('end_txt')}",
+        f"   🎯 赔率 {ratio_txt} ｜ 评分 {round(float(e.get('score') or 0), 1)} ｜ 判定 {verdict or '—'}",
+    ]
+    if e.get("reason"):
+        lines.append(f"   💡 理由：{e['reason']}")
+    if e.get("opensea"):
+        lines.append(f"   🔗 {e['opensea']}")
+    if e.get("explorer"):
+        lines.append(f"   ⛓ {e['explorer']}")
+    return lines
+
+
+def build_message(entries: list[dict], stats: dict) -> tuple[str, int]:
+    """拼成一条消息；超过字节上限就截断，返回 (文本, 实际纳入条数)。"""
+    now = datetime.now(CST)
+    header = [
+        f"🚀 MintGo 打新提醒 · {now:%m-%d %H:%M}",
+        f"🌐 扫描 {stats['scanned']} 个 ｜ {stats['chains_total']} 条链"
+        f"（{stats['chains_have']} 条有货） ｜ 本轮提醒 {len(entries)} 个",
+        "",
+    ]
+    body: list[str] = []
+    used = 0
+    included = 0
+    for i, e in enumerate(entries, 1):
+        block = render_entry(i, e)
+        text = "\n".join(block)
+        if used + byte_len(text) + 120 > MAX_BYTES and included > 0:
+            break
+        body.extend(block)
+        body.append("")
+        used += byte_len(text) + 1
+        included += 1
+    if included < len(entries):
+        body.append(f"…另有 {len(entries) - included} 个，详见本地报告")
+    return "\n".join(header + body).rstrip(), included
+
+
+# ---------------------------------------------------------------- 主流程
 
 
 def build_radar_index() -> dict[str, dict]:
     raw = load_json(RAW, {})
     idx: dict[str, dict] = {}
-    for chain, block in (raw.get("radar") or {}).items():
+    for _chain, block in (raw.get("radar") or {}).items():
         for it in block.get("items") or []:
             addr = (it.get("contractAddress") or "").lower()
             if addr and addr not in idx:
@@ -137,10 +250,21 @@ def build_radar_index() -> dict[str, dict]:
     return idx
 
 
+def scan_stats(raw: dict, scored: list[dict]) -> dict:
+    radar = raw.get("radar") or {}
+    return {
+        "scanned": raw.get("_scanned") or sum(len(b.get("items") or []) for b in radar.values()),
+        "chains_total": len(radar) or 0,
+        "chains_have": sum(1 for b in radar.values() if (b.get("items") or [])),
+        "scored": len(scored),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只打印不推送")
     ap.add_argument("--force-slug", help="强制对一个 slug 出一版（测试排版）")
+    ap.add_argument("--push-test", action="store_true", help="配合 --force-slug：强制真发一条做排版验证")
     args = ap.parse_args()
 
     import config_loader
@@ -157,6 +281,7 @@ def main() -> int:
     ending_soon_h = float(alert_cfg.get("ending_soon_minutes", 60)) / 60.0
 
     scored = load_json(SCORED, [])
+    raw = load_json(RAW, {})
     radar = build_radar_index()
     if not scored:
         log("没有 latest_scored.json，先跑一轮 run_once.py")
@@ -165,9 +290,8 @@ def main() -> int:
     key = ensure_key(verbose=False)
     state = load_json(STATE, {})
     now = datetime.now(CST)
-    sent = 0
 
-    # ---- 1. 候选提醒 ----
+    entries: list[dict] = []
     for s in scored:
         slug = _slug_of(s)
         if not slug:
@@ -178,12 +302,12 @@ def main() -> int:
         ratio = s.get("ratio")
         sales_1h = s.get("sales_1h") or 0
         try:
-            ratio_f = float(ratio) if ratio not in (None, "inf") else None
+            ratio_f = float(ratio) if ratio not in (None, "inf") else ratio
         except (TypeError, ValueError):
             ratio_f = None
 
         qualifies = verdict in ("值得打", "观察") or (
-            ratio_f is not None and ratio_f >= min_ratio and sales_1h >= min_sales
+            isinstance(ratio_f, float) and ratio_f >= min_ratio and sales_1h >= min_sales
         )
         if not qualifies and not args.force_slug:
             continue
@@ -198,131 +322,96 @@ def main() -> int:
                 pass
 
         item = radar.get((s.get("contract") or "").lower()) or {}
-        ask = best_ask(slug, key)
-        bid = best_bid(slug, key)
-        med = _median_sale(slug, key, cfg)
-        end_txt, hours_left = end_info(item.get("endAt"))
+        end_txt, hours_left = fmt_end(item.get("endAt"))
+        entries.append({
+            "slug": slug,
+            "name": s.get("name") or slug,
+            "chain": s.get("chain"),
+            "mint": s.get("mint_eth"),
+            "ask": best_ask(slug, key),
+            "bid": best_bid(slug, key),
+            "med": sale_median(slug, key, cfg),
+            "ratio": ratio_f,
+            "score": s.get("score"),
+            "verdict": verdict,
+            "sales_1h": sales_1h,
+            "start_at": item.get("startAt") or s.get("start_at"),
+            "end_txt": end_txt,
+            "hours_left": hours_left,
+            "opensea": s.get("opensea") or item.get("openseaUrl"),
+            "explorer": item.get("explorerUrl"),
+            "reason": _clip("；".join(s.get("reasons") or []), 90),
+        })
 
-        spread = None
-        if ask and bid:
-            spread = (ask - bid) / ask * 100
-        text = _render(
-            name=s.get("name") or slug,
-            chain=s.get("chain") or "",
-            mint=s.get("mint_eth"),
-            ask=ask,
-            bid=bid,
-            med=med,
-            spread=spread,
-            ratio=ratio_f,
-            score=s.get("score"),
-            verdict=verdict,
-            sales_1h=sales_1h,
-            end_txt=end_txt,
-            hours_left=hours_left,
-            opensea=s.get("opensea") or item.get("openseaUrl"),
-        )
-        log(f"提醒：{s.get('name')}（ask={fmt_eth(ask)} bid={fmt_eth(bid)} 剩余={hours_left}）")
-        if args.dry_run or args.force_slug:
+    if entries:
+        text, included = build_message(entries, scan_stats(raw, scored))
+        log(f"提醒 {len(entries)} 个（消息内 {included} 个）")
+        if (args.dry_run or args.force_slug) and not args.push_test:
             print("\n" + text + "\n")
         else:
             _push(cfg, text, send_text)
-        sent += 1
-        if args.dry_run or args.force_slug:
-            continue  # 预览模式不落库、不占冷却，避免影响真实提醒
-        _record({
-            "at": now.isoformat(), "type": "candidate", "slug": slug,
-            "name": s.get("name"), "chain": s.get("chain"),
-            "mint_eth": s.get("mint_eth"), "best_ask": ask, "best_bid": bid,
-            "sale_median": med, "ratio": ratio_f, "score": s.get("score"),
-            "verdict": verdict, "sales_1h": sales_1h,
-            "mint_end": item.get("endAt"), "hours_left": hours_left,
-            "opensea": s.get("opensea") or item.get("openseaUrl"),
-            "text": text,  # 存下原文，便于核对推送内容（含 emoji）
-        })
-        state.setdefault(slug, {})["last_sent_at"] = now.isoformat()
-        state[slug]["last_type"] = "candidate"
+        if not (args.dry_run or args.force_slug):
+            for e in entries:
+                _record({
+                    "at": now.isoformat(), "type": "candidate", "slug": e["slug"],
+                    "name": e["name"], "chain": e["chain"], "mint_eth": e["mint"],
+                    "best_ask": e["ask"], "best_bid": e["bid"], "sale_median": e["med"],
+                    "ratio": e["ratio"], "score": e["score"], "verdict": e["verdict"],
+                    "sales_1h": e["sales_1h"], "hours_left": e["hours_left"],
+                    "opensea": e["opensea"], "text": text,
+                })
+                state.setdefault(e["slug"], {})["last_sent_at"] = now.isoformat()
+                state[e["slug"]]["last_type"] = "candidate"
 
-    # ---- 2. 即将结束提醒 ----
+    # ---- 即将结束 ----
+    sent_end = 0
     for slug, st in list(state.items()):
         if st.get("ending_notified"):
             continue
         rec = _last_record_for(slug)
         if not rec:
             continue
-        _, hours_left = end_info(rec.get("mint_end"))
+        _, hours_left = fmt_end(rec.get("mint_end") or _hours_to_raw(rec.get("hours_left")))
         if hours_left is None or not (0 < hours_left <= ending_soon_h):
             continue
         text = (
             f"⏰ 打新即将结束 · {rec.get('name')}\n"
-            f"• 链：{rec.get('chain')}\n"
-            f"• mint 价：{fmt_eth(rec.get('mint_eth'))} ETH\n"
-            f"• 当前最优卖单：{fmt_eth(rec.get('best_ask'))}\n"
-            f"• 当前最优买单：{fmt_eth(rec.get('best_bid'))}\n"
-            f"• {end_info(rec.get('mint_end'))[0]}\n"
-            f"• OpenSea：{rec.get('opensea') or ''}"
+            f"📍 链：{CHAIN_LABEL.get(rec.get('chain'), rec.get('chain'))}\n"
+            f"💰 mint：{fmt_eth(rec.get('mint_eth'))} ETH ｜ 最优卖单 {fmt_eth(rec.get('best_ask'))}\n"
+            f"🟩 最优买单：{fmt_eth(rec.get('best_bid'))}\n"
+            f"🏁 {fmt_end(rec.get('mint_end'))[0]}\n"
+            f"🔗 {rec.get('opensea') or ''}"
         )
         log(f"即将结束：{rec.get('name')}（剩 {hours_left:.1f}h）")
         if args.dry_run:
             print("\n" + text + "\n")
         else:
             _push(cfg, text, send_text)
-        st["ending_notified"] = now.isoformat()
-        _record({"at": now.isoformat(), "type": "ending_soon", "slug": slug,
-                 "name": rec.get("name"), "hours_left": hours_left, "text": text})
-        sent += 1
+            st["ending_notified"] = now.isoformat()
+            _record({"at": now.isoformat(), "type": "ending_soon", "slug": slug,
+                     "name": rec.get("name"), "hours_left": hours_left, "text": text})
+        sent_end += 1
 
-    save_json(STATE, state)
-    log(f"完成：发出 {sent} 条提醒")
+    if not (args.dry_run or args.force_slug):
+        save_json(STATE, state)
+    log(f"完成：候选 {len(entries)} 条，即将结束 {sent_end} 条")
     return 0
 
 
-def _median_sale(slug: str, key: str, cfg: dict) -> float | None:
-    filters = cfg.get("filters") or {}
-    eth_usd = float(filters.get("eth_usd_assume", 2000) or 2000)
-    prices = recent_sale_prices(slug, key, int(filters.get("sale_sample", 50)), eth_usd)
-    return statistics.median(prices) if prices else None
+def _hours_to_raw(hours) -> str | None:
+    """把「还剩 N 小时」反推回时间串，供 fmt_end 复用（记录里可能没有 mint_end）。"""
+    if hours is None:
+        return None
+    try:
+        t = datetime.now(CST) + timedelta(hours=float(hours))
+    except (TypeError, ValueError):
+        return None
+    return t.isoformat()
 
 
-def _render(**k) -> str:
-    spread = k["spread"]
-    if k["ask"] is None:
-        ask_txt = "无（没有任何卖单）"
-    else:
-        ask_txt = f"{fmt_eth(k['ask'])} ETH"
-    if k["bid"] is None:
-        bid_txt = "无（没有任何买单）"
-    else:
-        bid_txt = f"{fmt_eth(k['bid'])} ETH"
-
-    # 赔率优先用报告里的（地板口径）；报告没算出来就用刚查到的卖单现算
-    ratio = k["ratio"]
-    if ratio is None and k["ask"] and k["mint"]:
-        try:
-            ratio = float(k["ask"]) / float(k["mint"])
-        except (TypeError, ValueError, ZeroDivisionError):
-            ratio = None
-    if ratio == float("inf"):
-        ratio_txt = "∞"
-    elif ratio is None:
-        ratio_txt = "—"
-    else:
-        ratio_txt = f"{ratio:.2f}x"
-
-    spread_txt = f"{spread:.1f}%" if spread is not None else "无法计算（缺一侧报价）"
-    return (
-        f"🎯 打新提醒 · {k['name']}\n"
-        f"• 链：{k['chain']}\n"
-        f"• mint 价：{fmt_eth(k['mint'])} ETH\n"
-        f"• 最优卖单：{ask_txt}（地板）\n"
-        f"• 最优买单：{bid_txt}\n"
-        f"• 买卖价差：{spread_txt}\n"
-        f"• 真实成交中位：{fmt_eth(k['med'])} ETH\n"
-        f"• 赔率（地板/mint）：{ratio_txt}\n"
-        f"• 1h 成交：{k['sales_1h']} 笔 · 评分 {k['score']} · 判定 {k['verdict']}\n"
-        f"• mint 结束：{k['end_txt']}\n"
-        f"• OpenSea：{k['opensea'] or ''}"
-    )
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _push(cfg: dict, text: str, send_text) -> None:
