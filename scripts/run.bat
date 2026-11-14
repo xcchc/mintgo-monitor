@@ -20,6 +20,7 @@ echo ==== run at %DATE% %TIME% ==== >> logs\task.log
 
 python -X utf8 src\run_once.py >> logs\task.log 2>&1
 python -X utf8 scripts\paper.py record >> logs\task.log 2>&1
+python -X utf8 scripts\alert_mint.py >> logs\task.log 2>&1
 python -X utf8 scripts\auto_mint.py --live >> logs\task.log 2>&1
 python -X utf8 scripts\watch_holdings.py >> logs\task.log 2>&1
 

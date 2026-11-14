@@ -119,6 +119,16 @@ holdings_watch:
   alert_on_loss: true          # 跌破成本时也提醒
   check_interval_minutes: 30   # 同一持仓两次详细检查的最小间隔（防刷 API）
 
+# 打新提醒（scripts/alert_mint.py）
+# 满足任一条件就推送：① 判定为「值得打/观察」；② 赔率 ≥ min_ratio 且 1h 成交 ≥ min_sales_1h
+# 每条提醒都带：最优卖单（地板）、最优买单、真实成交中位、mint 结束时间
+alert:
+  enabled: true
+  min_ratio: 2.0
+  min_sales_1h: 5
+  cooldown_minutes: 360      # 同一项目 6 小时内不重复推
+  ending_soon_minutes: 60    # mint 结束前 60 分钟再补一条「即将结束」
+
 # 企业微信机器人推送
 # 新建群机器人后把 webhook 填进来，并把 enabled 改成 true。
 # 不想推送就保持 enabled: false，抓取和报告照常工作。
