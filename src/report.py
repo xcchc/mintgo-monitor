@@ -148,6 +148,11 @@ def render(scored: list[Scored], data: dict, cfg: dict) -> str:
     lines.append("---")
     lines.append("")
     lines.append(
+        "> 口径：**赔率 = 挂单地板 / mint 价**（用于发现落差）；**成交中位** 来自 OpenSea 真实成交记录，"
+        "仅供参考、不参与评分。真实盈亏请看 `scripts/backtest.py` 的历史回测，那里一律按成交价算。"
+    )
+    lines.append("")
+    lines.append(
         "> 数据源：mintgo.fun `/api/view/radar` + `/api/market-snapshot`。"
         "本报告只做信息聚合，不构成投资建议；签名与转账请一律在自己的钱包完成。"
     )

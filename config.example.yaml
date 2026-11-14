@@ -69,11 +69,15 @@ filters:
   min_sale_premium: 1.1     # 成交中位价必须 ≥ mint 价 × 1.1
   sale_sample: 50           # 取最近多少笔真实成交算中位价
   require_offers: true      # 付费项目：集合买单为 0 时跳过（没有真实买家）
-  demand_check_report: true # 报告里的「值得打/观察」也走同一套复核
+  demand_check_report: true # 报告里的「值得打/观察」也走同一套复核（默认只标注理由）
+  demand_downgrade: false   # true = 需求复核不达标直接把判定改成跳过（默认不改，保持地板口径）
 
-  # 打分口径：用真实成交中位价当赔率分子，而不是挂单地板。
-  # 挂单价可以随手标，成交价才是市场；关掉就退回「挂单价口径」。
-  score_by_sale_price: true
+  # 报告里额外回填「成交中位价」做参考（只显示，不参与赔率计算）。
+  # 口径分工：
+  #   赔率（筛选）= 挂单地板 / mint 价   ← 用于发现「铸造价 vs 二级报价」的落差
+  #   盈亏（回测）= 真实成交价           ← scripts/backtest.py 与利润复盘都用这个
+  # 关掉可省 OpenSea 读额度（600/h）。
+  enrich_sale_median: true
   eth_usd_assume: 2000      # Robinhood 链上有大量稳定币（USDG）成交，折算成 ETH 等值的固定汇率
 
 # 报告

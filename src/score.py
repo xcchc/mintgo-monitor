@@ -227,9 +227,10 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
     price_eth = float(item.get("priceEth") or 0)
     floor = market.floor if market else None
 
-    # 成交价优先：run_once 抓完数据后，会给「有地板」的项目回填 saleMedianEth
-    # （OpenSea 真实成交的中位价，已折算成 ETH 等值）。挂单地板只是卖方要价，
-    # 只有成交价才算市场 —— 所以有成交价时一律用它当赔率分母。
+    # 成交中位只作为**展示用参考**，不参与评分。
+    # 评分口径坚持用挂单地板（mintgo market-snapshot 的 floorPriceEth）：
+    # 它是「现在市场上最便宜的卖方报价」，用于发现「铸造价 vs 二级报价」的落差。
+    # 真实的盈亏必须用成交价另算（见 scripts/backtest.py 与利润复盘）。
     sale_med: float | None = None
     raw_sm = item.get("saleMedianEth")
     if raw_sm is not None:
@@ -239,8 +240,8 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
             sale_med = None
         if sale_med is not None and sale_med <= 0:
             sale_med = None
-    price_ref = sale_med if sale_med is not None else floor
-    ref_label = "成交中位" if sale_med is not None else "地板"
+    price_ref = floor
+    ref_label = "地板"
 
     sales_1h = market.sales_1h if market else 0
     # 1 小时成交量门槛（ETH）。低于这个值即使笔数很多也视为刷量。
@@ -370,7 +371,7 @@ def score_item(item: dict, market: MarketRow | None, cfg: dict, now_ms: int) -> 
     #       平均每轮 1~4 个，经常是 0 个。这不是 bug，是数据本身的客观情况。
     # 想恢复「列出来自己看」的模式：config.yaml 里把 require_floor_data 设为 false。
     require_floor = bool(_cfg_val(cfg, "require_floor_data", True))
-    no_floor_data = floor is None and sale_med is None
+    no_floor_data = floor is None
 
     # 无地板但允许展示时，只收免费 mint（赔率算不出却要付钱 = 盲付）
     nofloor_max_price = float(_cfg_val(cfg, "nofloor_max_price_eth", 0.0))

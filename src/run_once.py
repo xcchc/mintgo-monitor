@@ -26,15 +26,17 @@ from notify import push  # noqa: E402
 
 
 def enrich_sale_medians(data: dict, cfg: dict, log) -> int:
-    """给「有地板」的项目回填真实成交中位价（ETH 等值），供打分使用。
+    """给「有地板」的项目回填真实成交中位价（ETH 等值），**只用于展示与需求复核**。
 
-    为什么：挂单地板只是**卖方要价**，评分必须按成交价算赔率。
-    实测 mihaoo 地板 0.000396、真实成交全在 0.0001 —— 用挂单价会算出 4 倍假赔率。
+    注意：评分（赔率）仍然用挂单地板，这是刻意的 —— 地板是「发现机会」的信号。
+    成交价只用于两件事：
+      1. 报告里并排显示，提醒「挂单价不等于成交价」
+      2. apply_demand_filter() 判断这盘子到底有没有人真的在买
 
     只处理有地板的少数项目（每轮 1~4 个），避免把 OpenSea 读额度（600/h）打光。
     """
     filters = cfg.get("filters") or {}
-    if not filters.get("score_by_sale_price", True):
+    if not filters.get("enrich_sale_median", True):
         return 0
     eth_usd = float(filters.get("eth_usd_assume", 2000) or 2000)
     sample = int(filters.get("sale_sample", 50))
@@ -102,7 +104,9 @@ def apply_demand_filter(scored: list, cfg: dict, log) -> int:
             continue
         s.reasons.append(f"需求复核：{why}")
         s.demand = info
-        if not ok:
+        # 默认只标注、不改判定 —— 赔率口径坚持用地板价，保证回测口径一致。
+        # 想让它直接改判定的，把 filters.demand_downgrade 设为 true。
+        if not ok and bool(filters.get("demand_downgrade", False)):
             s.verdict = "跳过"
             downgraded += 1
             log(f"  降级为跳过：{s.name} —— {why}")
