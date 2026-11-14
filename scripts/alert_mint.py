@@ -238,6 +238,7 @@ def main() -> int:
             "verdict": verdict, "sales_1h": sales_1h,
             "mint_end": item.get("endAt"), "hours_left": hours_left,
             "opensea": s.get("opensea") or item.get("openseaUrl"),
+            "text": text,  # 存下原文，便于核对推送内容（含 emoji）
         })
         state.setdefault(slug, {})["last_sent_at"] = now.isoformat()
         state[slug]["last_type"] = "candidate"
@@ -268,7 +269,7 @@ def main() -> int:
             _push(cfg, text, send_text)
         st["ending_notified"] = now.isoformat()
         _record({"at": now.isoformat(), "type": "ending_soon", "slug": slug,
-                 "name": rec.get("name"), "hours_left": hours_left})
+                 "name": rec.get("name"), "hours_left": hours_left, "text": text})
         sent += 1
 
     save_json(STATE, state)
